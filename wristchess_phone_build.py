@@ -58,7 +58,7 @@ HERE = Path(__file__).resolve().parent
 SHIM_SMALI_DIR = HERE / "phone-shims" / "smali"
 SHIM_JAVA_DIR = HERE / "phone-shims" / "java"
 SHIM_MANIFEST_ACTIVITY = """\
-        <activity android:excludeFromRecents="true" android:exported="false" android:label="@string/app_name" \
+        <activity android:excludeFromRecents="true" android:exported="true" android:label="@string/app_name" \
 android:name="net.kusik.wristchess.phoneshim.RemoteInputActivity" \
 android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar.MinWidth" \
 android:windowSoftInputMode="stateVisible|adjustResize">

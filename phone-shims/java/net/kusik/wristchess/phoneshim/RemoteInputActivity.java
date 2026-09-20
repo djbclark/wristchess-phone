@@ -51,9 +51,9 @@ public final class RemoteInputActivity extends Activity {
             }
         }
         if (inputs.isEmpty()) {
-            setResult(RESULT_CANCELED);
-            finish();
-            return;
+            // No RemoteInput[] (e.g. launched from `adb shell am start -a ...` for a
+            // smoke test): still show one generic field so the flow is observable.
+            inputs.add(new RemoteInput.Builder("result").setLabel("Input").build());
         }
         remoteInputs = inputs.toArray(new RemoteInput[0]);
         fields = new EditText[remoteInputs.length];
