@@ -6,3 +6,5 @@ splits64only/
 hd8.png
 *.idsig
 wristchess-phone-unsigned.apk
+arm64/Fairy-Stockfish/
+arm64/out/
