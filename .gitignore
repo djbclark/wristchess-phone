@@ -8,3 +8,4 @@ hd8.png
 wristchess-phone-unsigned.apk
 arm64/Fairy-Stockfish/
 arm64/out/
+__pycache__/

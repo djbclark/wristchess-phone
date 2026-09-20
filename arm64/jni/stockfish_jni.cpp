@@ -108,6 +108,13 @@ public:
         cv_.notify_one();
     }
 
+    // Drop anything still queued (used when the engine thread has exited).
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.clear();
+        setg(nullptr, nullptr, nullptr);
+    }
+
 protected:
     int underflow() override {
         if (gptr() < egptr())
@@ -179,7 +186,9 @@ jni_source g_source;
 jni_sink g_sink;
 
 std::mutex g_engine_mutex;  // guards g_thread / g_finished / g_engineObj
-std::thread g_thread;
+// Heap-allocated on purpose: a joinable std::thread global would std::terminate
+// in static destructors if the process ever exit()s while the engine runs.
+std::thread* g_thread = nullptr;
 std::atomic<bool> g_finished{false};
 
 // Mirrors Fairy-Stockfish's main(), reading std::cin (g_source) and writing
@@ -219,21 +228,31 @@ void engine_main() {
     g_finished.store(true);
 }
 
+// Called with g_engine_mutex held. Waits for the engine thread to exit.
+void join_engine() {
+    if (!g_thread)
+        return;
+    g_thread->join();
+    delete g_thread;
+    g_thread = nullptr;
+    g_finished.store(false);
+    g_source.clear();
+}
+
 // Called with g_engine_mutex held.
 void ensure_engine_running() {
-    if (g_thread.joinable()) {
+    if (g_thread) {
         if (!g_finished.load())
             return;
-        g_thread.join();
-        g_finished.store(false);
+        join_engine();
         LOGI("restarting engine after quit");
     }
     unsigned cores = std::thread::hardware_concurrency();
     if (cores == 0)
         cores = 1;
     LOGI("starting engine thread, Threads=%u", cores);
-    g_thread = std::thread(engine_main);
     g_source.push("setoption name Threads value " + std::to_string(cores) + "\n");
+    g_thread = new std::thread(engine_main);
 }
 
 }  // namespace
@@ -282,13 +301,26 @@ Java_net_kusik_wristchess_shared_chessengine_UCIChessEngineAndroid_clientToEngin
     if (cmd.back() != '\n')
         cmd.push_back('\n');
 
-    {
-        std::lock_guard<std::mutex> lock(g_engine_mutex);
-        if (!g_engineObj)
-            g_engineObj = env->NewGlobalRef(thiz);
-        ensure_engine_running();
+    LOGD("client -> engine: %.*s", static_cast<int>(cmd.size() - 1), cmd.c_str());
+
+    std::lock_guard<std::mutex> lock(g_engine_mutex);
+    if (!g_engineObj)
+        g_engineObj = env->NewGlobalRef(thiz);
+
+    // "quit" is handled synchronously: hand it to the engine, wait for the
+    // engine thread to finish, and drop the queue. The next command starts a
+    // fresh engine. (The original library would std::terminate on reuse.)
+    if (cmd == "quit\n") {
+        if (!g_thread) {
+            LOGD("quit with no engine running; ignored");
+            return;
+        }
+        g_source.push(std::move(cmd));
+        join_engine();
+        LOGI("engine stopped");
+        return;
     }
 
-    LOGD("client -> engine: %.*s", static_cast<int>(cmd.size() - 1), cmd.c_str());
+    ensure_engine_running();
     g_source.push(std::move(cmd));
 }
