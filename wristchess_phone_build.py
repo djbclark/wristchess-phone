@@ -47,15 +47,26 @@ OUT_DIR = Path("out")
 WORK = OUT_DIR / "work"
 HERE = Path(__file__).resolve().parent
 
-WEAR_SDK_VERSION_STUB = """\
-# Stub for com.google.wear.Sdk.VERSION from the Wear OS shared library
-# (com.google.android.wearable), which does not exist on phones. The app reads
-# WEAR_SDK_INT on API >= 34; 0 is what it uses below API 34.
-.class public final Lcom/google/wear/Sdk$VERSION;
-.super Ljava/lang/Object;
-
-.field public static final RELEASE:I = 0x0
-.field public static final WEAR_SDK_INT:I = 0x0
+# Phone shims (see phone-shims/README in each file's header comment):
+#  - phone-shims/smali/: stub classes from the Wear OS shared library that the
+#    app touches on phones (com.google.wear.Sdk$VERSION, the
+#    androidx.wear.ambient controller classes). Copied into a new dex so no
+#    existing smali is edited.
+#  - phone-shims/java/: RemoteInputActivity, a phone handler for the wearable
+#    REMOTE_INPUT intent the app uses to ask for the Lichess token. Compiled with
+#    javac + d8 when both are available; skipped (with a warning) otherwise.
+SHIM_SMALI_DIR = HERE / "phone-shims" / "smali"
+SHIM_JAVA_DIR = HERE / "phone-shims" / "java"
+SHIM_MANIFEST_ACTIVITY = """\
+        <activity android:excludeFromRecents="true" android:exported="false" android:label="@string/app_name" \
+android:name="net.kusik.wristchess.phoneshim.RemoteInputActivity" \
+android:theme="@android:style/Theme.DeviceDefault.Dialog.NoActionBar.MinWidth" \
+android:windowSoftInputMode="stateVisible|adjustResize">
+            <intent-filter>
+                <action android:name="android.support.wearable.input.action.REMOTE_INPUT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+        </activity>
 """
 
 # Ticwatch E profile from Aurora OSS GPlayApi (GPL-3.0), plus a Features line
@@ -195,7 +206,47 @@ def patch_manifest(manifest: Path):
         print(f"  manifest: {n} x {pat[:60]}")
     if 'extractNativeLibs' not in xml:
         xml = xml.replace("<application ", '<application android:extractNativeLibs="true" ', 1)
+    if "phoneshim.RemoteInputActivity" not in xml:
+        xml, n = re.subn(r"(\n\s*</application>)", "\n" + SHIM_MANIFEST_ACTIVITY.rstrip("\n") + r"\1", xml, count=1)
+        print(f"  manifest: {n} x RemoteInputActivity")
     manifest.write_text(xml)
+
+
+def build_shims(decoded: Path, bt: Path):
+    """Add the phone shim classes as extra dex files (nothing existing is edited)."""
+    existing = sorted(int(m.group(1) or 1) for p in decoded.iterdir()
+                      if (m := re.match(r"smali(?:_classes(\d+))?$", p.name)))
+    next_index = max(existing) + 1
+    # 1. smali stubs -> smali_classesN (apktool assembles it into classesN.dex)
+    if SHIM_SMALI_DIR.is_dir():
+        shutil.copytree(SHIM_SMALI_DIR, decoded / f"smali_classes{next_index}")
+        print(f"  shims: smali stubs -> classes{next_index}.dex")
+        next_index += 1
+    # 2. Java shim -> classesN.dex via javac + d8 (apktool copies raw classes*.dex as-is)
+    sources = sorted(SHIM_JAVA_DIR.rglob("*.java")) if SHIM_JAVA_DIR.is_dir() else []
+    if not sources:
+        return
+    javac = shutil.which("javac")
+    d8 = bt / "d8"
+    android_jars = sorted(glob.glob(str(bt.parent.parent / "platforms" / "android-*" / "android.jar")))
+    if not javac or not d8.is_file() or not android_jars:
+        print("  WARNING: javac/d8/android.jar missing; RemoteInputActivity shim skipped "
+              "(Lichess sign-in will crash on phones)")
+        return
+    classes = WORK / "shim-classes"
+    if classes.exists():
+        shutil.rmtree(classes)
+    classes.mkdir(parents=True)
+    run([javac, "--release", "11", "-Xlint:-options", "-cp", android_jars[-1], "-d", str(classes)]
+        + [str(s) for s in sources], stderr=subprocess.DEVNULL)
+    dex_out = WORK / "shim-dex"
+    if dex_out.exists():
+        shutil.rmtree(dex_out)
+    dex_out.mkdir(parents=True)
+    run([str(d8), "--release", "--min-api", "26", "--lib", android_jars[-1], "--output", str(dex_out)]
+        + [str(c) for c in classes.rglob("*.class")])
+    shutil.copy2(dex_out / "classes.dex", decoded / f"classes{next_index}.dex")
+    print(f"  shims: {len(sources)} Java file(s) -> classes{next_index}.dex")
 
 
 def rebuild(base: Path, splits, bt: Path):
@@ -225,12 +276,7 @@ def rebuild(base: Path, splits, bt: Path):
         for so in libs:
             shutil.copy2(so, dest / so.name)
         print(f"  merged {len(libs)} prebuilt arm64-v8a native libraries")
-    # com.google.wear.Sdk.VERSION comes from the Wear OS shared library, which
-    # phones lack; the app reads WEAR_SDK_INT on API >= 34 and crashes with
-    # NoClassDefFoundError without this stub (0 = what it uses below API 34).
-    stub = decoded / "smali" / "com" / "google" / "wear" / "Sdk$VERSION.smali"
-    stub.parent.mkdir(parents=True, exist_ok=True)
-    stub.write_text(WEAR_SDK_VERSION_STUB)
+    build_shims(decoded, bt)
     unsigned = WORK / "unsigned.apk"
     run(["apktool", "b", "-q", "-o", str(unsigned), str(decoded)])
     aligned = WORK / "aligned.apk"
