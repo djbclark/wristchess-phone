@@ -24,9 +24,12 @@ build-tools (zipalign + apksigner) under $ANDROID_HOME, $ANDROID_SDK_ROOT, or
 ~/Library/Android/sdk.
 
 Output: ./out/wristchess-phone.apk (relative to the current directory).
-Note: the app ships only 32-bit (armeabi-v7a) native code, so the result runs
-on phones that still support 32-bit apps; 64-bit-only devices (Pixel 7+,
-recent Galaxy S) will refuse it with INSTALL_FAILED_NO_MATCHING_ABIS.
+Note: the app ships only 32-bit (armeabi-v7a) native code. If a directory
+prebuilt-libs/arm64-v8a/ exists next to this script (arm64 builds of the same
+libraries, produced by arm64/build.sh + arm64/fetch-aar-libs.sh), its *.so are
+merged in too, so the result also installs on 64-bit-only devices (Pixel 7+,
+recent Galaxy S, Unihertz Titan 2 Elite); without it those devices refuse the
+APK with INSTALL_FAILED_NO_MATCHING_ABIS.
 """
 import getpass
 import glob
@@ -42,6 +45,18 @@ APP_ID = "net.kusik.wristchess"
 DEVICE = "twa"
 OUT_DIR = Path("out")
 WORK = OUT_DIR / "work"
+HERE = Path(__file__).resolve().parent
+
+WEAR_SDK_VERSION_STUB = """\
+# Stub for com.google.wear.Sdk.VERSION from the Wear OS shared library
+# (com.google.android.wearable), which does not exist on phones. The app reads
+# WEAR_SDK_INT on API >= 34; 0 is what it uses below API 34.
+.class public final Lcom/google/wear/Sdk$VERSION;
+.super Ljava/lang/Object;
+
+.field public static final RELEASE:I = 0x0
+.field public static final WEAR_SDK_INT:I = 0x0
+"""
 
 # Ticwatch E profile from Aurora OSS GPlayApi (GPL-3.0), plus a Features line
 # borrowed from a Pixel profile with android.hardware.type.watch prepended.
@@ -199,6 +214,23 @@ def rebuild(base: Path, splits, bt: Path):
                     z.extract(name, decoded)
                     n += 1
     print(f"  merged {n} native libraries from {len(splits)} ABI split(s)")
+    # Play only ships armeabi-v7a. arm64-v8a builds of the same libraries
+    # (see arm64/build.sh and arm64/fetch-aar-libs.sh) live in prebuilt-libs/;
+    # merge them so 64-bit-only phones can install the result.
+    prebuilt = HERE / "prebuilt-libs" / "arm64-v8a"
+    if prebuilt.is_dir():
+        dest = decoded / "lib" / "arm64-v8a"
+        dest.mkdir(parents=True, exist_ok=True)
+        libs = sorted(prebuilt.glob("*.so"))
+        for so in libs:
+            shutil.copy2(so, dest / so.name)
+        print(f"  merged {len(libs)} prebuilt arm64-v8a native libraries")
+    # com.google.wear.Sdk.VERSION comes from the Wear OS shared library, which
+    # phones lack; the app reads WEAR_SDK_INT on API >= 34 and crashes with
+    # NoClassDefFoundError without this stub (0 = what it uses below API 34).
+    stub = decoded / "smali" / "com" / "google" / "wear" / "Sdk$VERSION.smali"
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    stub.write_text(WEAR_SDK_VERSION_STUB)
     unsigned = WORK / "unsigned.apk"
     run(["apktool", "b", "-q", "-o", str(unsigned), str(decoded)])
     aligned = WORK / "aligned.apk"
