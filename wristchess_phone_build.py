@@ -212,6 +212,19 @@ def patch_manifest(manifest: Path):
     manifest.write_text(xml)
 
 
+def patch_styles(styles: Path):
+    """Theme.App (applied after the splash screen) is plain Theme.DeviceDefault. On a
+    watch that is already full-screen and title-less; on a phone it adds an action bar
+    with the app title plus a status bar, which pushed the board's top rank under the
+    title bar. Use the phone's no-action-bar fullscreen variant so the Compose UI gets
+    the whole square it was designed for."""
+    xml = styles.read_text()
+    xml, n = re.subn(r'(<style name="Theme\.App" parent=")@android:style/Theme\.DeviceDefault(")',
+                     r"\1@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen\2", xml)
+    print(f"  styles: {n} x Theme.App -> NoActionBar.Fullscreen")
+    styles.write_text(xml)
+
+
 def build_shims(decoded: Path, bt: Path):
     """Add the phone shim classes as extra dex files (nothing existing is edited)."""
     existing = sorted(int(m.group(1) or 1) for p in decoded.iterdir()
@@ -255,6 +268,7 @@ def rebuild(base: Path, splits, bt: Path):
         shutil.rmtree(decoded)
     run(["apktool", "d", "-q", "-f", "-o", str(decoded), str(base)])
     patch_manifest(decoded / "AndroidManifest.xml")
+    patch_styles(decoded / "res" / "values" / "styles.xml")
     yml = decoded / "apktool.yml"
     yml.write_text(re.sub(r"^\s*(isSplitRequired|requiredSplitTypes):.*\n", "", yml.read_text(), flags=re.M))
     n = 0
