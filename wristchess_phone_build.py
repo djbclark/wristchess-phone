@@ -147,8 +147,7 @@ def apkeep_tty(args):
     cmd = ["script", "-q", "/dev/null"] + args
     print("+", " ".join(args[:6]), "...", flush=True)
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    text = p.stdout.replace("\r", "
-")
+    text = p.stdout.replace("\r", "\n")
     for line in text.splitlines():
         if line.strip() and "aas_et/" not in line and not line.startswith("\x1b"):
             print("  " + re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip())
@@ -165,12 +164,9 @@ def get_aas_token(email, token):
     m = re.search(r"aas_et/[A-Za-z0-9_=-]+", p.stdout)
     if not m:
         die("could not exchange the OAuth code for an AAS token (codes are "
-            "single-use and expire quickly; fetch a fresh one).
-" + p.stdout.strip())
-    print("
-AAS token (long-lived; paste this next time instead of logging in):")
-    print("  " + m.group(0) + "
-")
+            "single-use and expire quickly; fetch a fresh one).\n" + p.stdout.strip())
+    print("\nAAS token (long-lived; paste this next time instead of logging in):")
+    print("  " + m.group(0) + "\n")
     return m.group(0)
 
 
@@ -211,13 +207,35 @@ def patch_manifest(manifest: Path):
     if 'extractNativeLibs' not in xml:
         xml = xml.replace("<application ", '<application android:extractNativeLibs="true" ', 1)
     if "phoneshim.RemoteInputActivity" not in xml:
-        xml, n = re.subn(r"(
-\s*</application>)", "
-" + SHIM_MANIFEST_ACTIVITY.rstrip("
-") + r"\1", xml, count=1)
+        xml, n = re.subn(r"(\n\s*</application>)", "\n" + SHIM_MANIFEST_ACTIVITY.rstrip("\n") + r"\1", xml, count=1)
         print(f"  manifest: {n} x RemoteInputActivity")
     manifest.write_text(xml)
 
+
+
+def patch_styles_dialog_wide(decoded: Path):
+    styles = decoded / "res" / "values" / "styles.xml"
+    if not styles.exists(): return
+    xml = styles.read_text()
+    
+    if 'name="Theme.App.WideDialog"' not in xml:
+        custom_style = """
+    <style name="Theme.App.WideDialog" parent="@android:style/Theme.DeviceDefault.Dialog.NoActionBar.MinWidth">
+        <item name="android:windowMinWidthMajor">100%</item>
+        <item name="android:windowMinWidthMinor">100%</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
+"""
+        xml = xml.replace("</resources>", custom_style + "</resources>")
+    
+    xml = re.sub(
+        r'<style name="Theme\.App" parent=".*?"',
+        r'<style name="Theme.App" parent="@style/Theme.App.WideDialog"',
+        xml
+    )
+    styles.write_text(xml)
+    print("  patched styles.xml: Theme.App -> Theme.App.WideDialog")
 
 def patch_styles(styles: Path):
     """Theme.App (applied after the splash screen) is plain Theme.DeviceDefault. On a
@@ -230,10 +248,14 @@ def patch_styles(styles: Path):
                      r"\1@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen\2", xml)
     print(f"  styles: {n} x Theme.App -> NoActionBar.Fullscreen")
     styles.write_text(xml)
-def patch_board(decoded: Path):
+
+
+
+def patch_board(decoded):
     xd0 = decoded / "smali" / "xd0.smali"
     if not xd0.is_file(): return
     xml = xd0.read_text()
+    import re
     match = re.search(r"\.method public static final a\(Landroid/content/res/Configuration;\)I.*?\.end method", xml, re.DOTALL)
     if match:
         new_method = """.method public static final a(Landroid/content/res/Configuration;)I
@@ -245,13 +267,13 @@ def patch_board(decoded: Path):
 .end method"""
         xml = xml[:match.start()] + new_method + xml[match.end():]
         xd0.write_text(xml)
-        print("  patched xd0.smali: board size fits width minus 80dp")
+        print("  patched xd0.smali: board size fits width minus 100dp")
 
-
-def patch_puzzles(decoded: Path):
+def patch_puzzles(decoded):
     fz3 = decoded / "smali_classes2" / "fz3.smali"
     if not fz3.is_file(): return
     xml = fz3.read_text()
+    import re
     style_smali = """sget-object v3, Lad5;->b:Lsv4;
     invoke-virtual {v2, v3}, Lrn1;->m(Ljy3;)Ljava/lang/Object;
     move-result-object v3
@@ -265,6 +287,7 @@ def patch_puzzles(decoded: Path):
     xml, n3 = re.subn(r"const v31, 0x1aefc", "const v31, 0xaefc", xml)
     print(f"  patched fz3.smali: {n1+n2+n3} x default style bits")
     fz3.write_text(xml)
+
 def build_shims(decoded: Path, bt: Path):
     """Add the phone shim classes as extra dex files (nothing existing is edited)."""
     existing = sorted(int(m.group(1) or 1) for p in decoded.iterdir()
@@ -308,12 +331,11 @@ def rebuild(base: Path, splits, bt: Path):
         shutil.rmtree(decoded)
     run(["apktool", "d", "-q", "-f", "-o", str(decoded), str(base)])
     patch_manifest(decoded / "AndroidManifest.xml")
-    patch_styles(decoded / "res" / "values" / "styles.xml")
+    patch_styles_dialog_wide(decoded)
     patch_board(decoded)
     patch_puzzles(decoded)
     yml = decoded / "apktool.yml"
-    yml.write_text(re.sub(r"^\s*(isSplitRequired|requiredSplitTypes):.*
-", "", yml.read_text(), flags=re.M))
+    yml.write_text(re.sub(r"^\s*(isSplitRequired|requiredSplitTypes):.*\n", "", yml.read_text(), flags=re.M))
     n = 0
     for s in splits:
         with zipfile.ZipFile(s) as z:
@@ -368,9 +390,7 @@ def main():
     base, splits = download(email, aas)
     print(f"downloaded {base.name} + {len(splits)} ABI split(s)")
     final = rebuild(base, splits, bt)
-    print(f"
-Done: {final.resolve()}
-Install with: adb install -r {final}")
+    print(f"\nDone: {final.resolve()}\nInstall with: adb install -r {final}")
 
 
 if __name__ == "__main__":
