@@ -270,6 +270,8 @@ def patch_board(decoded):
         print("  patched xd0.smali: board size fits width minus 100dp")
 
 def patch_puzzles(decoded):
+    
+
     fz3 = decoded / "smali_classes2" / "fz3.smali"
     if not fz3.is_file(): return
     xml = fz3.read_text()
@@ -334,6 +336,8 @@ def rebuild(base: Path, splits, bt: Path):
     patch_styles_dialog_wide(decoded)
     patch_board(decoded)
     patch_puzzles(decoded)
+    os.system("python3 patch_out_rg3.py")
+
     yml = decoded / "apktool.yml"
     yml.write_text(re.sub(r"^\s*(isSplitRequired|requiredSplitTypes):.*\n", "", yml.read_text(), flags=re.M))
     n = 0
