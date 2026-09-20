@@ -240,11 +240,13 @@ def patch_board(decoded: Path):
     .locals 0
     invoke-virtual {p0}, Ljava/lang/Object;->getClass()Ljava/lang/Class;
     iget p0, p0, Landroid/content/res/Configuration;->smallestScreenWidthDp:I
+    add-int/lit8 p0, p0, -0x64
     return p0
 .end method"""
         xml = xml[:match.start()] + new_method + xml[match.end():]
         xd0.write_text(xml)
-        print("  patched xd0.smali: board size fits width")
+        print("  patched xd0.smali: board size fits width minus 80dp")
+
 
 def patch_puzzles(decoded: Path):
     fz3 = decoded / "smali_classes2" / "fz3.smali"
@@ -263,23 +265,6 @@ def patch_puzzles(decoded: Path):
     xml, n3 = re.subn(r"const v31, 0x1aefc", "const v31, 0xaefc", xml)
     print(f"  patched fz3.smali: {n1+n2+n3} x default style bits")
     fz3.write_text(xml)
-def patch_round(decoded: Path):
-    import re
-    def repl(m):
-        v = m.group(1)
-        return f"const/4 {v}, 0x1"
-    
-    total = 0
-    for f in decoded.rglob("*.smali"):
-        content = f.read_text()
-        if "isScreenRound()Z" in content:
-            new_content, n = re.subn(r"invoke-virtual(?:/range)?\s*\{[^}]*\}, Landroid/content/res/Configuration;->isScreenRound\(\)Z.*?move-result\s+(v\d+|p\d+)", repl, content, flags=re.DOTALL)
-            if n > 0:
-                total += n
-                f.write_text(new_content)
-    print(f"  patched isScreenRound globally: {total} occurrences forced to true")
-
-
 def build_shims(decoded: Path, bt: Path):
     """Add the phone shim classes as extra dex files (nothing existing is edited)."""
     existing = sorted(int(m.group(1) or 1) for p in decoded.iterdir()
@@ -326,7 +311,6 @@ def rebuild(base: Path, splits, bt: Path):
     patch_styles(decoded / "res" / "values" / "styles.xml")
     patch_board(decoded)
     patch_puzzles(decoded)
-    patch_round(decoded)
     yml = decoded / "apktool.yml"
     yml.write_text(re.sub(r"^\s*(isSplitRequired|requiredSplitTypes):.*
 ", "", yml.read_text(), flags=re.M))
